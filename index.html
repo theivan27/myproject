@@ -30,11 +30,6 @@
   #note .sub.secret{color:#ffcf8a;text-shadow:0 0 12px rgba(255,140,190,.8)}
   #note .cur{color:#ff9fc4;animation:blink 1s steps(1) infinite}
   @keyframes blink{50%{opacity:0}}
-  .pop{position:fixed;transform:translate(-50%,-50%);pointer-events:none;white-space:nowrap;font-weight:700;
-    font-size:clamp(15px,4.2vw,22px);color:#fff;text-shadow:0 0 10px #ff6fa8,0 0 22px rgba(255,111,168,.6);
-    animation:rise 2.8s ease-out forwards}
-  @keyframes rise{0%{opacity:0;transform:translate(-50%,-30%) scale(.7)}12%{opacity:1;transform:translate(-50%,-60%) scale(1.05)}
-    70%{opacity:1}100%{opacity:0;transform:translate(-50%,-260%) scale(1)}}
   #regrow{position:fixed;right:14px;bottom:14px;width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.15);
     background:rgba(14,16,34,.7);color:#ffc2d6;font-size:20px;cursor:pointer;opacity:.6;transition:opacity .2s;
     backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
@@ -62,12 +57,6 @@ const CONFIG = {
     'smile — it looks good on you',
   ],
   secret: "psst… you found the secret. I think you're wonderful ♡",
-  compliments: [
-    "you've got this!", 'smile :)', 'proud of you ♡', "you're amazing",
-    'coffee break? you earned it', 'the flowers are jealous of you',
-    "go get 'em, Liliana", 'you light up the room', 'deep breath — you\'re doing great',
-    'sending you a hug', '♡ ♡ ♡',
-  ],
 };
 /* ======================== */
 const FONT = '"JetBrains Mono", Menlo, Consolas, monospace';
@@ -192,8 +181,7 @@ function makeBouquet() {
   const paper = pick(PAPERS);
   const lastBloom = Math.max(...flowers.map(f => f.start)) + 1.5 + 1.3;
   for (const o of [...flowers, ...ferns, ...filler]) { o.rho = Math.hypot(o.nx, o.dz); o.phi = Math.atan2(o.nx, o.dz); }
-  const order2 = CONFIG.compliments.map((_, i) => i).sort(() => Math.random() - 0.5);
-  return { flowers, ferns, filler, stars, paper, msgAt: lastBloom + 0.3, cOrder: order2, cIdx: 0 };
+  return { flowers, ferns, filler, stars, paper, msgAt: lastBloom + 0.3 };
 }
 
 /* ---------- layout ---------- */
@@ -456,17 +444,6 @@ function drawBee() {
   if ((T % 7) < 1.2) { const msg = 'bzz'; for (let i = 0; i < 3; i++) put(bx + (right ? 2 : -4) + i, by - 1, msg[i], rgb([255, 230, 150], 0.7), z); }
 }
 
-/* ---------- compliment popups ---------- */
-function popCompliment(px, py) {
-  const text = CONFIG.compliments[BQ.cOrder[BQ.cIdx++ % BQ.cOrder.length]];
-  const el = document.createElement('div');
-  el.className = 'pop'; el.textContent = text;
-  const pad = Math.min(W / 2 - 10, text.length * 6 + 10);
-  el.style.left = clamp(px, pad, W - pad) + 'px'; el.style.top = py + 'px';
-  document.body.appendChild(el);
-  setTimeout(() => el.remove(), 2900);
-}
-
 /* ---------- petals ---------- */
 const PCH = [',', '`', "'", '~', '°'];
 function spawnPetal(x, y, col, vx = rnd(-0.8, 0.8), vy = rnd(0.5, 1.5)) {
@@ -659,7 +636,6 @@ const endPointer = e => {
     taps++;
     const bee = beeAt(T), onBee = T - BQ.msgAt > 0.5 && Math.abs(gx - bee[0]) < 4 && Math.abs(gy - bee[1]) < 2.5;
     if (onBee || taps === 5 || (taps > 5 && (taps - 5) % 8 === 0)) triggerSurprise();
-    else popCompliment(e.clientX, e.clientY);
   } else spin = clamp(down.v, -5, 5);
   dragging = false; down = null; cv.style.cursor = 'grab';
 };
