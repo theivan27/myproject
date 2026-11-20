@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ASCII Bouquet — Lilies & Peonies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;
+    background:radial-gradient(ellipse at 50% 40%,#161a33 0%,#0b0d1c 60%,#06070f 100%);
+    font-family:"JetBrains Mono",Menlo,Consolas,monospace;color:#f6d7e3}
+  canvas{position:fixed;left:0;top:0;display:block}
+  #c{touch-action:manipulation;cursor:pointer}
+  #g{filter:blur(5px) saturate(1.4);opacity:.75;mix-blend-mode:screen;pointer-events:none}
+  .scan{position:fixed;inset:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(to bottom,rgba(255,255,255,.028) 0 1px,transparent 1px 3px),
+      radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.55) 100%)}
+  .hint{position:fixed;top:14px;left:0;right:0;text-align:center;font-size:12px;letter-spacing:.08em;
+    color:rgba(255,210,225,.55);pointer-events:none;animation:fade 9s ease forwards}
+  @keyframes fade{0%,70%{opacity:1}100%{opacity:0}}
+  .bar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);display:flex;gap:6px;align-items:center;
+    padding:6px;border-radius:999px;background:rgba(14,16,34,.72);border:1px solid rgba(255,255,255,.12);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);opacity:.55;transition:opacity .25s;
+    max-width:calc(100vw - 24px);box-sizing:border-box}
+  .bar:hover,.bar:focus-within{opacity:1}
+  .bar input{flex:1;min-width:0;width:220px;background:transparent;border:0;outline:0;color:#ffd6e4;
+    font:16px "JetBrains Mono",Menlo,monospace;padding:6px 10px}
+  .bar input::placeholder{color:rgba(255,214,228,.4)}
+  .bar button{border:0;border-radius:999px;padding:8px 12px;font:600 13px "JetBrains Mono",Menlo,monospace;
+    background:#ff7aa8;color:#1a0b14;cursor:pointer;white-space:nowrap}
+  .bar button.ghost{background:rgba(255,255,255,.1);color:#ffd6e4}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<canvas id="g"></canvas>
+<div class="scan"></div>
+<div class="hint">tap anywhere for petals ✿</div>
+<form class="bar" id="bar" autocomplete="off">
+  <input id="msg" maxlength="60" placeholder="your message…" aria-label="Message">
+  <button type="submit" class="ghost" aria-label="Set message">✓</button>
+  <button type="button" id="regrow">↻ regrow</button>
+</form>
+<script>
+(() => {
+const FONT = '"JetBrains Mono", Menlo, Consolas, monospace';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const gv = document.getElementById('g'), gctx = gv.getContext('2d');
+
+let W, H, dpr, fs, cw, chh, cols, rows, asp, N;
+let CH = [], CO = [], ZB = new Float32Array(0);
+let G = {};
+let BQ = null;          // current bouquet
+let T = 0, tStart = performance.now(), lastFrame = 0, lastT = 0;
+let petals = [], nextPetal = 0;
+
+/* ---------- helpers ---------- */
+const rnd = (a, b) => a + Math.random() * (b - a);
+const pick = a => a[Math.floor(Math.random() * a.length)];
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const mix = (c1, c2, t) => [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
+const rgb = (c, k = 1) => `rgb(${Math.min(255, c[0] * k) | 0},${Math.min(255, c[1] * k) | 0},${Math.min(255, c[2] * k) | 0})`;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeBack = t => { const c1 = 1.4, c3 = c1 + 1; return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2); };
+const hash = (x, y, s) => { const v = Math.sin(x * 127.1 + y * 311.7 + s * 74.7) * 43758.5453; return v - Math.floor(v); };
+function dirChar(ax, ayUp) {
+  let a = Math.atan2(ayUp, ax); if (a < 0) a += Math.PI;
+  const d = a * 57.2958;
+  if (d < 22.5 || d >= 157.5) return '-';
+  if (d < 67.5) return '/';
+  if (d < 112.5) return '|';
+  return '\\';
+}
+function put(x, y, c, col, z) {
+  x = Math.round(x); y = Math.round(y);
+  if (x < 0 || y < 0 || x >= cols || y >= rows) return;
+  const i = y * cols + x;
+  if (z < ZB[i]) return;
+  ZB[i] = z; CH[i] = c; CO[i] = col;
+}
+
+/* ---------- palettes ---------- */
+const PEONY = [
+  { in: [205, 30, 100], out: [255, 180, 205] },   // rose pink
+  { in: [230, 75, 65],  out: [255, 198, 170] },   // coral
+  { in: [236, 140, 172], out: [255, 242, 246] },  // blush white
+  { in: [160, 20, 95],  out: [245, 132, 192] },   // magenta
+];
+const LILY = {
+  stargazer: { rib: [205, 25, 90],  mid: [255, 85, 145],  edge: [255, 240, 246], spot: [125, 10, 55], throat: [225, 240, 150] },
+  white:     { rib: [215, 220, 190], mid: [250, 250, 238], edge: [255, 255, 255], spot: null,          throat: [185, 230, 135] },
+  tiger:     { rib: [230, 95, 15],  mid: [255, 148, 45],  edge: [255, 208, 135], spot: [90, 25, 0],    throat: [255, 205, 90] },
+  blush:     { rib: [235, 115, 160], mid: [255, 185, 208], edge: [255, 246, 249], spot: [200, 60, 115], throat: [215, 240, 160] },
+};
+const PAPERS = [
+  { c: [222, 196, 150], ribbon: [255, 92, 135] },  // kraft
+  { c: [240, 192, 208], ribbon: [200, 35, 90] },   // blush
+  { c: [196, 184, 238], ribbon: [255, 120, 165] }, // lavender
+];
+
+// [type, nx, ny, size]  — nx/ny in bouquet radius units, ny measured up from wrap top
+const LAYOUT = [
+  ['lily', -0.80, 0.42, 1.00],
+  ['lily',  0.80, 0.50, 0.95],
+  ['bud',  -0.98, 0.88, 1.00],
+  ['bud',   0.97, 0.98, 1.00],
+  ['lily', -0.34, 1.04, 1.00],
+  ['lily',  0.42, 1.08, 0.95],
+  ['bud',   0.04, 1.32, 1.00],
+  ['peony', -0.48, 0.64, 1.05],
+  ['peony',  0.52, 0.74, 1.00],
+  ['peony',  0.03, 0.86, 1.15],
+  ['peony', -0.12, 0.38, 0.95],
+  ['peony',  0.32, 0.34, 0.85],
+];
+
+/* ---------- bouquet generation ---------- */
+function makeBouquet() {
+  const varieties = Object.keys(LILY);
+  const mainLily = pick(varieties);
+  const order = LAYOUT.map((_, i) => i).sort(() => Math.random() - 0.5);
+  const flowers = LAYOUT.map(([type, nx, ny, size], i) => {
+    const v = Math.random() < 0.7 ? mainLily : pick(varieties);
+    return {
+      type, size,
+      nx: nx + rnd(-0.05, 0.05), ny: ny + rnd(-0.04, 0.04),
+      rot: rnd(0, Math.PI), tilt: rnd(0.72, 0.98),
+      pal: PEONY[Math.floor(Math.random() * PEONY.length)],
+      lily: v, open: Math.random() < 0.4,
+      ph: rnd(0, 6.283), seed: rnd(0, 1000),
+      sx: rnd(-1.5, 1.5),
+      stemCol: [rnd(40, 70), rnd(130, 165), rnd(60, 85)],
+      start: 1.0 + order.indexOf(i) * 0.17,
+    };
+  });
+  const ferns = [];
+  const nF = 5;
+  for (let j = 0; j < nF; j++) {
+    const a = lerp(-1.3, 1.3, j / (nF - 1)) + rnd(-0.12, 0.12);
+    const d = rnd(1.05, 1.3);
+    ferns.push({ nx: Math.sin(a) * d * 0.85, ny: Math.cos(a) * d - 0.05, sx: rnd(-1.2, 1.2),
+      ph: rnd(0, 6.28), start: 1.1 + j * 0.12,
+      c1: [rnd(40, 60), rnd(110, 140), rnd(60, 80)], c2: [rnd(120, 160), rnd(200, 230), rnd(110, 140)] });
+  }
+  const filler = [];
+  for (let k = 0; k < 8; k++) {
+    const a = rnd(-1.25, 1.25), d = rnd(0.9, 1.2);
+    const fl = [];
+    for (let m = 0; m < 11; m++) {
+      const r = Math.sqrt(Math.random()) * 0.11, th = rnd(0, 6.283);
+      fl.push({ ox: Math.cos(th) * r, oy: Math.sin(th) * r * 0.9, c: pick(['o', 'o', '°', '*', '.']), ph: rnd(0, 6.28) });
+    }
+    filler.push({ nx: Math.sin(a) * d * 0.9, ny: Math.cos(a) * d, fl, sx: rnd(-1, 1), ph: rnd(0, 6.28), start: 3.4 + k * 0.15 });
+  }
+  const stars = [];
+  const nS = Math.max(60, Math.floor(N / 55));
+  for (let s = 0; s < nS; s++) {
+    stars.push({ x: Math.random(), y: Math.random(), c: pick(['.', '.', '·', '+', '*', "'"]),
+      sp: rnd(0.6, 2.2), ph: rnd(0, 6.28), col: pick([[255, 255, 255], [255, 220, 235], [200, 215, 255], [255, 240, 200]]),
+      big: Math.random() < 0.06 });
+  }
+  const paper = pick(PAPERS);
+  const lastBloom = Math.max(...flowers.map(f => f.start)) + 1.5 + 1.3;
+  return { flowers, ferns, filler, stars, paper, msgAt: lastBloom + 0.3 };
+}
+
+/* ---------- layout ---------- */
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+  cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  gv.width = Math.ceil(W / 3); gv.height = Math.ceil(H / 3);
+  gv.style.width = W + 'px'; gv.style.height = H + 'px';
+  fs = clamp(Math.min(W / 95, H / 58), 7, 15);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.font = `${fs}px ${FONT}`; ctx.textBaseline = 'top';
+  cw = ctx.measureText('M').width; chh = fs * 1.15;
+  cols = Math.floor(W / cw); rows = Math.floor(H / chh); asp = chh / cw; N = cols * rows;
+  CH = new Array(N).fill(''); CO = new Array(N).fill(''); ZB = new Float32Array(N);
+  const reserve = Math.ceil(80 / chh) + 4;             // message + control bar
+  const Rw = cols * 0.42 / asp, Rh = (rows - reserve) / 2.45;
+  const R = Math.min(Rw, Rh);
+  const vs = clamp(Rh / R, 1, 1.45);                     // stretch vertically on tall screens
+  const content = 2.45 * R * vs;
+  const topPad = Math.max(1, (rows - reserve - content) / 2 + 1);
+  const wrapTop = topPad + 1.6 * R * vs;
+  G = { R, vs, cx: cols / 2, wrapTop, B: wrapTop + 0.85 * R * vs, ox: (W - cols * cw) / 2, oy: (H - rows * chh) / 2 };
+}
+
+/* ---------- geometry ---------- */
+function bez(p0, p1, p2, t) { const u = 1 - t; return [u * u * p0[0] + 2 * u * t * p1[0] + t * t * p2[0], u * u * p0[1] + 2 * u * t * p1[1] + t * t * p2[1]]; }
+function bezd(p0, p1, p2, t) { return [2 * (1 - t) * (p1[0] - p0[0]) + 2 * t * (p2[0] - p1[0]), 2 * (1 - t) * (p1[1] - p0[1]) + 2 * t * (p2[1] - p1[1])]; }
+function headPos(o) {
+  const sway = Math.sin(T * 0.7 + o.ph) * 0.8 * o.ny + Math.sin(T * 0.31 + o.ph * 2) * 0.4;
+  return [G.cx + o.nx * G.R * asp + sway, G.wrapTop - o.ny * G.R * G.vs];
+}
+function drawStem(p0, p2, prog, z, cBot, cTop, cb) {
+  const p1 = [lerp(p0[0], p2[0], 0.2), lerp(p0[1], p2[1], 0.6)];
+  const len = Math.hypot((p2[0] - p0[0]) / asp, p2[1] - p0[1]);
+  const n = Math.ceil(len * 2.4) + 2;
+  for (let i = 0; i <= n; i++) {
+    const t = i / n; if (t > prog) break;
+    const p = bez(p0, p1, p2, t), d = bezd(p0, p1, p2, t);
+    put(p[0], p[1], dirChar(d[0] / asp, -d[1]), rgb(mix(cBot, cTop, t)), z);
+    if (cb) cb(t, p, d, i);
+  }
+  const de = bezd(p0, p1, p2, 1);
+  const vx = de[0] / asp, vy = -de[1], m = Math.hypot(vx, vy) || 1;
+  return [vx / m, vy / m];
+}
+function drawLine(x, y, dx, dy, len, col, z) { // dx,dy visual unit dir (up +)
+  const n = Math.ceil(len * 2.4);
+  const c = dirChar(dx, dy);
+  for (let i = 1; i <= n; i++) { const s = (i / n) * len; put(x + dx * s * asp, y - dy * s, c, col, z); }
+}
+
+/* ---------- flowers ---------- */
+function drawPeony(f, F, b, z) {
+  const rad = 0.22 * G.R * f.size * b; if (rad < 0.3) return;
+  const x0 = Math.floor(F[0] - rad * asp * 1.2), x1 = Math.ceil(F[0] + rad * asp * 1.2);
+  const y0 = Math.floor(F[1] - rad * 1.2), y1 = Math.ceil(F[1] + rad * 1.2);
+  const glyph = ['@', '&', 'O', 'o', 'o'];
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const vx = (x - F[0]) / asp / rad, vy = (y - F[1]) / rad / 0.92;
+    const d = Math.hypot(vx, vy), a = Math.atan2(-vy, vx);
+    const edge = 1 + 0.09 * Math.sin(6 * a + f.ph) + 0.05 * Math.sin(13 * a + f.ph * 2);
+    if (d > edge) continue;
+    const dn = d / edge;
+    const bv = dn * 3.4 + 0.35 * Math.sin(5 * a + f.ph * 1.7) * dn + 0.2 * Math.sin(9 * a + f.ph);
+    const band = Math.floor(bv), fr = bv - band;
+    let col = mix(f.pal.in, f.pal.out, clamp(dn * 1.1 - 0.05, 0, 1));
+    let k = 0.8 + 0.3 * clamp(0.5 - vy * 0.5 + vx * 0.1, 0, 1);
+    let c;
+    if (f.open && dn < 0.13) { c = (x + y) % 2 ? '*' : '.'; col = [255, 210, 95]; k = 1; }
+    else if (fr > 0.8) { c = Math.abs(vy) > Math.abs(vx) * 0.8 ? '~' : (vx > 0 ? ')' : '('); k *= 0.68; }
+    else c = glyph[Math.min(band, 4)];
+    put(x, y, c, rgb(col, k), z);
+  }
+}
+function drawLily(f, F, b, z) {
+  const L = 0.33 * G.R * f.size * b; if (L < 0.4) return;
+  const P = LILY[f.lily];
+  const ext = L * 1.02;
+  const x0 = Math.floor(F[0] - ext * asp), x1 = Math.ceil(F[0] + ext * asp);
+  const y0 = Math.floor(F[1] - ext), y1 = Math.ceil(F[1] + ext);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const vx = (x - F[0]) / asp, vy = -(y - F[1]) / f.tilt;
+    const r = Math.hypot(vx, vy); if (r > L) continue;
+    const a = Math.atan2(vy, vx);
+    let best = -1, bs = 0, bu = 0, bth = 0;
+    for (let k = 0; k < 6; k++) {
+      const th = f.rot + k * Math.PI / 3, inner = k % 2 === 1;
+      const Lk = L * (inner ? 0.88 : 1);
+      let da = a - th; da = Math.atan2(Math.sin(da), Math.cos(da));
+      const along = r * Math.cos(da), across = r * Math.sin(da);
+      if (along <= 0 || along > Lk) continue;
+      const s = along / Lk;
+      const hw = Lk * (inner ? 0.32 : 0.27) * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.65)), 0.8) + (s < 0.18 ? 0.08 * L : 0);
+      const u = Math.abs(across) / hw;
+      if (u < 1) { const m = (1 - u) + (inner ? 0.3 : 0); if (m > best) { best = m; bs = s; bu = u; bth = th; } }
+    }
+    if (best < 0) continue;
+    const ax = Math.cos(bth), ay = Math.sin(bth) * f.tilt;
+    let c, col;
+    if (P.spot && bs > 0.14 && bs < 0.55 && bu < 0.75 && hash(x, y, f.seed) < 0.13) { c = '.'; col = P.spot; }
+    else if (bu < 0.18) { c = dirChar(ax, ay); col = P.rib; }
+    else if (bu > 0.82) { c = hash(x, y, f.seed + 1) < 0.5 ? ':' : '.'; col = P.edge; }
+    else { c = bu < 0.6 ? '%' : '*'; col = mix(P.mid, P.edge, (bu - 0.18) / 0.64 * 0.8); }
+    if (bs < 0.22 && bu >= 0.2) col = mix(P.throat, col, bs / 0.22);
+    put(x, y, c, rgb(col), z);
+  }
+  // stamens
+  if (b > 0.6) {
+    const anther = f.lily === 'tiger' ? [120, 40, 10] : [195, 80, 25];
+    for (let k = 0; k < 6; k++) {
+      const th = f.rot + Math.PI / 6 + k * Math.PI / 3;
+      const Ls = 0.42 * L, dx = Math.cos(th), dy = Math.sin(th) * f.tilt;
+      const n = Math.ceil(Ls * 1.6);
+      for (let i = 1; i < n; i++) {
+        const s = i / n * Ls;
+        put(F[0] + dx * s * asp, F[1] - dy * s, '.', 'rgb(225,240,195)', z + 0.01);
+      }
+      put(F[0] + dx * Ls * asp, F[1] - dy * Ls, 'o', rgb(anther), z + 0.02);
+    }
+    put(F[0], F[1], '*', 'rgb(180,225,120)', z + 0.02);
+  }
+}
+function drawBud(f, F, dir, b, z) {
+  const Lb = 0.22 * G.R * f.size * b; if (Lb < 0.3) return;
+  const wmax = 0.055 * G.R * f.size * (0.6 + 0.4 * b);
+  const tip = mix(LILY[f.lily].mid, [255, 255, 255], 0.35);
+  const x0 = Math.floor(F[0] - Lb * asp), x1 = Math.ceil(F[0] + Lb * asp);
+  const y0 = Math.floor(F[1] - Lb), y1 = Math.ceil(F[1] + Lb);
+  const ac = dirChar(dir[0], dir[1]);
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const vx = (x - F[0]) / asp, vy = -(y - F[1]);
+    const along = vx * dir[0] + vy * dir[1], across = -vx * dir[1] + vy * dir[0];
+    if (along < 0 || along > Lb) continue;
+    const s = along / Lb;
+    const hw = wmax * Math.pow(Math.sin(Math.PI * Math.pow(s, 0.6)), 0.8) + 0.25;
+    const u = Math.abs(across) / hw; if (u > 1) continue;
+    const col = mix([105, 175, 90], tip, Math.pow(s, 0.8));
+    const c = u > 0.6 ? (across > 0 ? '(' : ')') : ac;
+    put(x, y, c, rgb(col, u > 0.6 ? 0.8 : 1), z);
+  }
+}
+
+/* ---------- wrap + ribbon ---------- */
+function drawWrap(rev) {
+  const { cx, wrapTop: top, B, R } = G, H0 = B - top, Wt = 0.55 * R * asp;
+  const pc = BQ.paper.c, vis = B - rev * (H0 + 4);
+  const folds = [-0.62, -0.25, 0.2, 0.56];
+  const zig = x => Math.abs(((x * 0.33) % 2 + 2) % 2 - 1) * 2.2;
+  for (let y = Math.floor(top - 3); y <= Math.ceil(B); y++) {
+    if (y < vis) continue;
+    const tt = clamp((B - y) / H0, 0, 1);
+    const hw = Wt * Math.pow(tt, 0.95) + 0.5;
+    for (let x = Math.floor(cx - hw); x <= Math.ceil(cx + hw); x++) {
+      const rx = x - cx; if (Math.abs(rx) > hw) continue;
+      const zt = top - zig(x);
+      if (y < zt) continue;
+      let c, k;
+      if (y < zt + 1) { c = zig(x + 1) > zig(x - 1) ? '/' : '\\'; k = 1; }
+      else if (Math.abs(rx) > hw - 1.2) { c = rx < 0 ? '\\' : '/'; k = 0.95; }
+      else {
+        let fold = null;
+        for (const fk of folds) if (Math.abs(x - (cx + fk * Wt * tt)) < 0.5) fold = fk;
+        if (fold !== null) { c = fold < 0 ? '\\' : '/'; k = 0.85; }
+        else { c = (x + y * 3) % 4 === 0 ? ':' : '.'; k = 0.5; }
+      }
+      if (rx > 0) k *= 0.82;
+      put(x, y, c, rgb(pc, k), 2.5);
+    }
+  }
+  // ribbon band
+  if (rev >= 1) {
+    const yr = Math.round(top + 0.55 * H0);
+    for (let dy = 0; dy < 2; dy++) {
+      const tt = clamp((B - (yr + dy)) / H0, 0, 1), hw = Wt * Math.pow(tt, 0.95) + 0.5;
+      for (let x = Math.floor(cx - hw); x <= Math.ceil(cx + hw); x++)
+        put(x, yr + dy, '=', rgb(BQ.paper.ribbon, dy ? 0.75 : 1), 2.6);
+    }
+  }
+}
+const BOW = [
+  "  .--.   .--.  ",
+  " (    \\ /    ) ",
+  "  '--.(@).--'  ",
+  "     /   \\     ",
+  "    /     \\    ",
+  "   ~       ~   ",
+];
+function drawBow(p) {
+  const yr = Math.round(G.wrapTop + 0.55 * (G.B - G.wrapTop));
+  const w = BOW[0].length, x0 = Math.round(G.cx - w / 2), y0 = yr - 2;
+  const show = Math.floor(p * (w / 2 + 1));
+  BOW.forEach((line, j) => {
+    for (let i = 0; i < w; i++) {
+      const ch = line[i]; if (ch === ' ') continue;
+      if (Math.abs(i - (w - 1) / 2) > show) continue;
+      const col = ch === '@' ? 'rgb(255,212,95)' : rgb(BQ.paper.ribbon, j > 2 ? 0.85 : 1.08);
+      put(x0 + i, y0 + j, ch, col, 9);
+    }
+  });
+}
+
+/* ---------- message ---------- */
+let message = 'Have a great day at work, Liliana ♡';
+try { const m = localStorage.getItem('bouquet-msg-liliana'); if (m) message = m; } catch (e) {}
+let msgOffset = 0; // seconds to skip typing
+function drawMessage() {
+  const tm = T - BQ.msgAt + msgOffset; if (tm < 0) return;
+  const shown = Math.floor(tm * 16);
+  const maxW = Math.max(10, cols - 6);
+  const words = message.split(' '), lines = [];
+  let cur = '';
+  for (const w of words) { if ((cur + ' ' + w).trim().length > maxW) { if (cur) lines.push(cur); cur = w; } else cur = (cur + ' ' + w).trim(); }
+  if (cur) lines.push(cur);
+  let y = Math.round(G.B) + 3, count = 0;
+  const total = message.length;
+  for (const line of lines) {
+    const x0 = Math.round(G.cx - line.length / 2);
+    for (let i = 0; i < line.length; i++) {
+      if (count >= shown) break;
+      const tc = count / Math.max(1, total - 1);
+      const wob = 0.85 + 0.15 * Math.sin(T * 2 + count * 0.4);
+      put(x0 + i, y, line[i], rgb(mix([255, 140, 185], [255, 214, 160], tc), wob), 11);
+      count++;
+    }
+    if (count < shown || shown >= total) { /* full line */ }
+    y++;
+  }
+  if (shown < total || Math.floor(T * 2) % 2 === 0) {
+    // blinking cursor after last typed char
+    let c = 0, cy = Math.round(G.B) + 3, cxp = 0;
+    for (const line of lines) {
+      const x0 = Math.round(G.cx - line.length / 2);
+      if (c + line.length >= Math.min(shown, total)) { cxp = x0 + (Math.min(shown, total) - c); break; }
+      c += line.length; cy++;
+    }
+    put(cxp, cy, '_', 'rgb(255,170,200)', 11);
+  }
+}
+
+/* ---------- petals ---------- */
+const PCH = [',', '`', "'", '~', '°'];
+function spawnPetal(x, y, col, vx = rnd(-0.8, 0.8), vy = rnd(0.5, 1.5)) {
+  petals.push({ x, y, vx, vy, col, ph: rnd(0, 6.28), life: rnd(7, 12) });
+}
+function petalColor(f) {
+  if (f.type === 'peony') return rgb(mix(f.pal.in, f.pal.out, rnd(0.3, 0.9)));
+  return rgb(mix(LILY[f.lily].mid, LILY[f.lily].edge, rnd(0.2, 0.8)));
+}
+
+/* ---------- frame ---------- */
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (now - lastFrame < 24) return; // ~40fps
+  lastFrame = now;
+  T = (now - tStart) / 1000;
+  const dt = Math.min(0.1, T - lastT); lastT = T;
+
+  CH.fill(''); ZB.fill(-1);
+
+  // stars
+  const sf = clamp(T / 1.2, 0, 1);
+  for (const s of BQ.stars) {
+    const tw = 0.5 + 0.5 * Math.sin(T * s.sp + s.ph);
+    const k = (0.25 + 0.75 * tw) * sf;
+    const x = s.x * cols, y = s.y * rows;
+    put(x, y, s.c, rgb(s.col, k), 0);
+    if (s.big && tw > 0.8) {
+      put(x - 1, y, '-', rgb(s.col, k * 0.6), 0); put(x + 1, y, '-', rgb(s.col, k * 0.6), 0);
+      put(x, y - 1, ':', rgb(s.col, k * 0.5), 0); put(x, y + 1, ':', rgb(s.col, k * 0.5), 0);
+      put(x, y, '+', rgb(s.col, k), 0.1);
+    }
+  }
+
+  // wrap
+  const wrapRev = easeOut(clamp(T / 1.2, 0, 1));
+  drawWrap(wrapRev);
+  if (T > 1.2) drawBow(easeOut(clamp((T - 1.2) / 0.6, 0, 1)));
+
+  // ferns
+  for (const fe of BQ.ferns) {
+    const prog = easeOut(clamp((T - fe.start) / 1.8, 0, 1)); if (prog <= 0) continue;
+    const F = headPos(fe), p0 = [G.cx + fe.sx, G.B - 1];
+    drawStem(p0, F, prog, 1.2, fe.c1, fe.c2, (t, p, d, i) => {
+      if (t < 0.4 || i % 3) return;
+      let tx = d[0] / asp, ty = -d[1]; const m = Math.hypot(tx, ty) || 1; tx /= m; ty /= m;
+      const l = (0.07 * (1 - t) + 0.025) * G.R * Math.min(1, (prog - t) * 6 + 0.2);
+      for (const sgn of [-1, 1]) {
+        const an = sgn * 0.95, ca = Math.cos(an), sa = Math.sin(an);
+        drawLine(p[0], p[1], tx * ca - ty * sa, tx * sa + ty * ca, l, rgb(mix(fe.c1, fe.c2, t), 0.85), 1.3);
+      }
+    });
+  }
+
+  // filler (baby's breath)
+  for (const fl of BQ.filler) {
+    const b = easeOut(clamp((T - fl.start) / 1.0, 0, 1)); if (b <= 0) continue;
+    const C = headPos(fl);
+    drawStem([G.cx + fl.sx, G.B - 1], C, b, 0.9, [60, 110, 70], [110, 160, 110]);
+    for (const p of fl.fl) {
+      const k = 0.7 + 0.3 * Math.sin(T * 1.6 + p.ph);
+      put(C[0] + p.ox * G.R * asp * b, C[1] + p.oy * G.R * b, p.c, rgb([255, 250, 240], k), 2.8);
+    }
+  }
+
+  // flowers
+  for (const f of BQ.flowers) {
+    const prog = easeOut(clamp((T - f.start) / 1.5, 0, 1)); if (prog <= 0) continue;
+    const F = headPos(f), p0 = [G.cx + f.sx, G.B - 1];
+    const dir = drawStem(p0, F, prog, 1, mix(f.stemCol, [30, 80, 40], 0.4), f.stemCol);
+    if (prog < 1) continue;
+    let b = easeBack(clamp((T - f.start - 1.5) / 1.3, 0, 1));
+    b *= 1 + 0.025 * Math.sin(T * 1.3 + f.ph);
+    const z = 3 + (1.6 - f.ny);
+    if (f.type === 'peony') drawPeony(f, F, b, z);
+    else if (f.type === 'lily') drawLily(f, F, b, z);
+    else drawBud(f, F, dir, b, z);
+  }
+
+  // ambient falling petals
+  if (T > BQ.msgAt - 0.5 && T > nextPetal) {
+    const blooms = BQ.flowers.filter(f => f.type !== 'bud');
+    const f = pick(blooms), F = headPos(f), a = rnd(0, 6.28), r = 0.2 * G.R;
+    spawnPetal(F[0] + Math.cos(a) * r * asp, F[1] + Math.sin(a) * r, petalColor(f));
+    nextPetal = T + rnd(0.5, 1.2);
+  }
+  for (let i = petals.length - 1; i >= 0; i--) {
+    const p = petals[i];
+    p.vy = Math.min(p.vy + 4 * dt, 3.2);
+    p.vx *= 0.985;
+    p.x += (p.vx + Math.sin(T * 2 + p.ph) * 1.6) * dt;
+    p.y += p.vy * dt;
+    p.life -= dt;
+    if (p.y > rows + 1 || p.life < 0) { petals.splice(i, 1); continue; }
+    put(p.x, p.y, PCH[Math.floor(T * 4 + p.ph) % PCH.length], p.col, 10);
+  }
+
+  drawMessage();
+  render();
+}
+
+function render() {
+  ctx.clearRect(0, 0, W, H);
+  const { ox, oy } = G;
+  for (let i = 0; i < N; i++) {
+    const c = CH[i]; if (!c) continue;
+    const x = i % cols, y = (i / cols) | 0;
+    ctx.fillStyle = CO[i];
+    ctx.fillText(c, ox + x * cw, oy + y * chh);
+  }
+  gctx.clearRect(0, 0, gv.width, gv.height);
+  gctx.drawImage(cv, 0, 0, gv.width, gv.height);
+}
+
+/* ---------- interaction ---------- */
+cv.addEventListener('pointerdown', e => {
+  const gx = (e.clientX - G.ox) / cw, gy = (e.clientY - G.oy) / chh;
+  const blooms = BQ.flowers.filter(f => f.type !== 'bud');
+  for (let i = 0; i < 16; i++) spawnPetal(gx, gy, petalColor(pick(blooms)), rnd(-9, 9), rnd(-7, -1.5));
+});
+const input = document.getElementById('msg');
+input.value = message;
+input.addEventListener('input', () => {
+  message = input.value.trim() || ' ';
+  msgOffset = Math.max(msgOffset, 1000);
+});
+document.getElementById('bar').addEventListener('submit', e => {
+  e.preventDefault();
+  message = input.value.trim() || 'Have a great day at work, Liliana ♡';
+  try { localStorage.setItem('bouquet-msg-liliana', message); } catch (err) {}
+  msgOffset = BQ.msgAt - T; // retype now
+  input.blur();
+});
+document.getElementById('regrow').addEventListener('click', () => {
+  BQ = makeBouquet(); petals = []; nextPetal = 0; msgOffset = 0;
+  tStart = performance.now(); lastT = 0;
+});
+let rT;
+window.addEventListener('resize', () => { clearTimeout(rT); rT = setTimeout(() => { const s = BQ && BQ.stars; resize(); if (s) BQ.stars = s; }, 120); });
+
+function start() { resize(); BQ = makeBouquet(); tStart = performance.now(); requestAnimationFrame(frame); }
+let started = false;
+const go = () => { if (!started) { started = true; start(); } };
+if (document.fonts && document.fonts.load) {
+  document.fonts.load(`14px "JetBrains Mono"`).then(go, go);
+  setTimeout(go, 1500);
+} else go();
+})();
+</script>
+</body>
+</html>
